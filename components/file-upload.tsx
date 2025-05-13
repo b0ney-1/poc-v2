@@ -79,81 +79,87 @@ const FileUpload: React.FC = () => {
     }
   }, []);
 
-  // Process file with chunking
+  // Process file with direct S3 upload
   const processFile = async (fileItem: FileItem, file: File) => {
     try {
-      // Update status to parsing
+      // Update status to uploading
       setFiles(prev => 
-        prev.map(f => f.id === fileItem.id ? { ...f, status: 'parsing' as FileStatus, progress: 10 } : f)
+        prev.map(f => f.id === fileItem.id ? { ...f, status: 'uploading' as FileStatus, progress: 10 } : f)
       );
       
-      // Always use server-side parsing for consistency
-      console.log(`Processing PDF file: ${file.name}`);
-      
-      // Process with server-side parsing
-      console.log('Using server-side PDF processing with parse-pdf API');
+      console.log(`Uploading PDF file directly to S3: ${file.name}`);
       
       try {
-        // Step 1: Parse the PDF using the parse-pdf API
+        // Create form data for the S3 upload
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('filename', file.name); // Ensure filename is passed
         
-        const parseResponse = await fetch('/api/parse-pdf', {
+        // Upload the file directly to S3 via the s3-upload API
+        const uploadResponse = await fetch('/api/s3-upload', {
           method: 'POST',
           body: formData,
         });
 
-        if (!parseResponse.ok) {
-          const errorData = await parseResponse.json();
-          throw new Error(errorData.error || `PDF parsing failed: ${parseResponse.statusText}`);
+        if (!uploadResponse.ok) {
+          const errorData = await uploadResponse.json();
+          throw new Error(errorData.error || `S3 upload failed: ${uploadResponse.statusText}`);
         }
 
-        // Get the parsed chunks
-        const parseData = await parseResponse.json();
-        const { chunks, namespace } = parseData;
+        // Get the response data
+        const s3Data = await uploadResponse.json();
+        console.log('S3 upload successful:', s3Data);
         
-        if (!chunks || chunks.length === 0) {
-          throw new Error('No text chunks were extracted from the PDF');
+        // Log the direct S3 URL specifically for easy access
+        if (s3Data.url) {
+          console.log('File is accessible at:', s3Data.url);
         }
         
-        // Update progress
+        // Update file status to completed for the S3 upload
         setFiles(prev => 
           prev.map(f => f.id === fileItem.id ? { 
             ...f, 
-            status: 'uploading' as FileStatus, 
-            progress: 50,
-            chunks: chunks.length,
-            processedChunks: 0 
+            status: 'completed' as FileStatus, 
+            progress: 100 
           } : f)
         );
         
-        // Step 2: Send the chunks to the upload API
-        const uploadResponse = await fetch('/api/upload', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            chunks,
-            filename: file.name,
-            namespace,
-            embeddingModel,
-          }),
-        });
-
-        if (!uploadResponse.ok) {
-          const errorData = await uploadResponse.json();
-          throw new Error(errorData.error || `Upload failed: ${uploadResponse.statusText}`);
+        // Trigger the embedding process in the background
+        // We don't await this call since we want it to run asynchronously
+        try {
+          console.log('Triggering async embedding process...');
+          
+          // Create a namespace from the filename
+          const namespace = file.name.replace(/\.pdf$/i, '').replace(/[^a-z0-9]/gi, '-').toLowerCase();
+          
+          // Call the upload API with the S3 URL
+          fetch('/api/upload', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              s3Url: s3Data.url,
+              filename: file.name,
+              namespace,
+              embeddingModel,
+              isAsyncProcess: true, // Flag to indicate this is an async background process
+            }),
+          }).catch(embedError => {
+            // Just log errors, don't fail the upload process
+            console.error('Background embedding process error:', embedError);
+          });
+          
+          console.log('Async embedding process initiated for:', file.name);
+        } catch (embedError) {
+          // Just log errors, don't fail the upload process
+          console.error('Failed to initiate background embedding process:', embedError);
         }
-
-        // Update status to completed for server-side processing
-        setFiles(prev => 
-          prev.map(f => f.id === fileItem.id ? { ...f, status: 'completed' as FileStatus, progress: 100 } : f)
-        );
+        
       } catch (error: unknown) {
         const serverError = error instanceof Error ? error : new Error(String(error));
-        console.error('Server-side processing failed:', serverError);
-        throw new Error(`Server-side processing failed: ${serverError.message}`);
+        console.error('S3 upload failed:', serverError);
+        throw new Error(`S3 upload failed: ${serverError.message}`);
       }
 
     } catch (error) {

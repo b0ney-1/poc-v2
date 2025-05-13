@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { OpenAI } from 'openai';
 import { Index } from '@upstash/vector';
 import { v4 as uuidv4 } from 'uuid';
+import { extractTextFromFile } from '@/lib/embeddings/extractor';
+import { processPdfIntoChunks } from '@/utils/pdf-parser';
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -85,31 +87,61 @@ async function processTextChunks(chunks: string[], namespace: string, filename: 
   }
 }
 
+// Function to fetch and process a PDF from S3
+async function fetchAndProcessPdf(s3Url: string): Promise<string[]> {
+  try {
+    console.log('Fetching PDF from S3:', s3Url);
+    
+    // Fetch the PDF from the S3 URL
+    const response = await fetch(s3Url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch PDF: ${response.statusText}`);
+    }
+    
+    // Get the PDF as a blob
+    const pdfBlob = await response.blob();
+    console.log(`PDF fetched, size: ${pdfBlob.size} bytes`);
+    
+    // Use the existing extractor to parse the PDF
+    const extractedText = await extractTextFromFile(pdfBlob);
+    console.log(`PDF parsed, text length: ${extractedText.length} characters`);
+    
+    // Use the existing chunking utility
+    const chunks = processPdfIntoChunks(extractedText);
+    console.log(`Split into ${chunks.length} chunks`);
+    
+    return chunks;
+  } catch (error) {
+    console.error('Error fetching or processing PDF:', error);
+    throw error;
+  }
+}
+
 // Note: Server-side PDF parsing is not supported in Edge runtime
 // PDF parsing should be done client-side and chunks sent to this API
 
 /**
  * Handle POST requests to upload pre-processed text chunks
+ * or process PDF from S3 URL
  */
 export async function POST(request: NextRequest) {
   try {
-    // Handle JSON data with pre-processed chunks
+    // Handle JSON data with pre-processed chunks or S3 URL
     const data = await request.json();
-    const { chunks, filename, namespace, embeddingModel = 'text-embedding-3-large' } = data;
+    const { 
+      chunks, 
+      s3Url, 
+      filename, 
+      namespace, 
+      embeddingModel = 'text-embedding-3-large',
+      isAsyncProcess = false 
+    } = data;
     
     console.log('Received upload request:');
     console.log('- Filename:', filename);
     console.log('- Namespace:', namespace);
     console.log('- Embedding Model:', embeddingModel);
-    console.log('- Chunks count:', chunks?.length || 0);
-    console.log('- First chunk preview:', chunks?.[0]?.substring(0, 100) + '...');
-    
-    if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
-      return NextResponse.json(
-        { error: 'No text chunks provided' },
-        { status: 400 }
-      );
-    }
+    console.log('- Is Async Process:', isAsyncProcess);
     
     if (!filename) {
       return NextResponse.json(
@@ -125,8 +157,57 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Process the text chunks
-    const result = await processTextChunks(chunks, namespace, filename, embeddingModel);
+    // Process either pre-processed chunks or fetch and process from S3 URL
+    let textChunks: string[] = [];
+    
+    // Handle pre-processed chunks
+    if (chunks && Array.isArray(chunks) && chunks.length > 0) {
+      console.log('- Chunks count:', chunks.length);
+      console.log('- First chunk preview:', chunks[0]?.substring(0, 100) + '...');
+      textChunks = chunks;
+    }
+    // Handle S3 URL
+    else if (s3Url) {
+      console.log('- S3 URL:', s3Url);
+      // For async processing, return immediately and process in the background
+      if (isAsyncProcess) {
+        // Return immediate success response
+        console.log('Starting async processing of PDF from S3...');
+        
+        // Start processing in background without awaiting completion
+        (async () => {
+          try {
+            const s3Chunks = await fetchAndProcessPdf(s3Url);
+            console.log(`Async processing: Fetched ${s3Chunks.length} chunks from PDF`);
+            const result = await processTextChunks(s3Chunks, namespace, filename, embeddingModel);
+            console.log('Async processing completed successfully:', result);
+          } catch (bgError) {
+            console.error('Async processing error:', bgError);
+          }
+        })();
+        
+        return NextResponse.json({
+          success: true,
+          message: 'Async processing initiated',
+          filename,
+          namespace
+        });
+      } 
+      // For synchronous processing, wait for completion
+      else {
+        console.log('Processing PDF from S3 synchronously...');
+        textChunks = await fetchAndProcessPdf(s3Url);
+      }
+    } 
+    else {
+      return NextResponse.json(
+        { error: 'Either chunks or S3 URL must be provided' },
+        { status: 400 }
+      );
+    }
+    
+    // Process the text chunks (only reached in non-async case)
+    const result = await processTextChunks(textChunks, namespace, filename, embeddingModel);
     
     return NextResponse.json(result);
   } catch (error) {
