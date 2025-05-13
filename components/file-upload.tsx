@@ -24,7 +24,7 @@ const FileUpload: React.FC = () => {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [embeddingModel, setEmbeddingModel] = useState<EmbeddingModel>('text-embedding-3-large');
+  const [embeddingModel, setEmbeddingModel] = useState<EmbeddingModel>('text-embedding-3-small');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   
   // Fetch the list of uploaded files when the component mounts

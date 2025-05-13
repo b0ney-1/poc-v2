@@ -48,13 +48,13 @@ export async function POST(req: NextRequest) {
         const previousMessages = messages.slice(0, -1).map(convertVercelMessageToLangChainMessage);
         const currentMessageContent = messages[messages.length - 1].content;
 
-        const model = openai('gpt-3.5-turbo');
+        const model = openai('gpt-4o');
 
         // Initialize vector store without specifying a namespace to search across all namespaces
         const vectorstore = new UpstashVectorStore(new OpenAIEmbeddings({
             // model: "text-embedding-ada-002",
-            // model: "text-embedding-3-small",
-            model: "text-embedding-3-large",
+            model: "text-embedding-3-small",
+            // model: "text-embedding-3-large",
         }));
         
         console.log('Performing similarity search across all namespaces');
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
         // Start timer for vector search
         const vectorSearchStartTime = performance.now();
         
-        const documents = await vectorstore.similaritySearch(currentMessageContent, 6);
+        const documents = await vectorstore.similaritySearch(currentMessageContent, 15);
         
         // End timer for vector search
         const vectorSearchEndTime = performance.now();
@@ -106,21 +106,26 @@ export async function POST(req: NextRequest) {
         const context = (formattedDocuments.map((doc) => doc.pageContent)).join("\n");
 
         const AGENT_SYSTEM_TEMPLATE = `
-      You are an artificial intelligence assistant ,
+      You are an artificial intelligence assistant.
 
-      Your responses should be precise and factual, with an emphasis on using the context provided and providing urls from the context all the time.
+      First, determine if the user query requires specific information or context. 
+      - For simple greetings, casual conversation, or general questions, respond naturally without mentioning or using the retrieved context.
+      - For specific questions that require information, use the provided context if relevant and cite sources.
+
+      Your responses should be precise and factual. Provide URLs from the context only when they are relevant to the query.
 
       Don't repeat yourself in responses, and if an answer is unavailable in the retrieved content, state that you don't know.
 
       Now, answer the message below:
       ${currentMessageContent}
 
-        Based on the context below:
-        ${context}
+      Context (only use if needed for the specific query):
+      ${context}
 
-        And the previous messages:
-        ${previousMessages.map((message: ChatMessage) => message.content).join("\n")}
+      Previous messages:
+      ${previousMessages.map((message: ChatMessage) => message.content).join("\n")}
     `;
+        console.log('Agent system template:', AGENT_SYSTEM_TEMPLATE);
         // Start timer for LLM response
         const llmStartTime = performance.now();
         

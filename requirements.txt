@@ -1,2 +1,0 @@
-upstash-ratelimit
-upstash-redis
